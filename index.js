@@ -150,18 +150,49 @@ app.listen(PORT, async () => {
           }
         } catch {}
       }
+      // custom_roles.allowed_pages — added in a later release.
+      try {
+        const desc = await sequelize.getQueryInterface().describeTable("custom_roles");
+        if (!desc.allowed_pages) {
+          await sequelize.getQueryInterface().addColumn("custom_roles", "allowed_pages", { type: DT.JSON, allowNull: true });
+          console.log("✅ Added allowed_pages column to custom_roles");
+        }
+      } catch {}
     } catch (e) { console.error("custom_roles bootstrap:", e); }
-    // Ensure Contact-related tables exist (idempotent).
+    // Ensure Contact-related tables exist (idempotent). Try alter first;
+    // if that fails (e.g. SQLite refusing certain ALTER TABLE ops), fall
+    // back to a non-altering sync and add the new JSON columns by hand.
     try {
       const { Contact, ContactPhoneNumber, ContactEmail, ContactAddress, ContactSocial, MergeLog } = await import("./models/contactModel.js");
-      await Contact.sync({ alter: true });
-      await ContactPhoneNumber.sync({ alter: true });
-      await ContactEmail.sync({ alter: true });
-      await ContactAddress.sync({ alter: true });
-      await ContactSocial.sync({ alter: true });
-      await MergeLog.sync({ alter: true });
-      console.log("✅ Contact tables synced successfully");
-    } catch (e) { console.error("Contact tables sync error:", e.message); }
+      try {
+        await Contact.sync({ alter: true });
+        await ContactPhoneNumber.sync({ alter: true });
+        await ContactEmail.sync({ alter: true });
+        await ContactAddress.sync({ alter: true });
+        await ContactSocial.sync({ alter: true });
+        await MergeLog.sync({ alter: true });
+        console.log("✅ Contact tables synced successfully");
+      } catch (alterErr) {
+        console.warn("Contact alter sync failed — falling back to plain sync + manual column adds:", alterErr.message);
+        await Contact.sync();
+        await ContactPhoneNumber.sync();
+        await ContactEmail.sync();
+        await ContactAddress.sync();
+        await ContactSocial.sync();
+        await MergeLog.sync();
+        // Manually add the new JSON columns to contacts if they're missing.
+        const { DataTypes: DT } = await import("sequelize");
+        const desc = await sequelize.getQueryInterface().describeTable("contacts").catch(() => ({}));
+        for (const col of ["family", "education", "experience", "office", "health", "emergency"]) {
+          if (!desc[col]) {
+            try {
+              await sequelize.getQueryInterface().addColumn("contacts", col, { type: DT.JSON, allowNull: true });
+              console.log(`✅ Added ${col} column to contacts`);
+            } catch {}
+          }
+        }
+      }
+    } catch (e) { console.error("Contact tables bootstrap fatal error:", e.message); }
 
     // Ensure the academy_enrollments table exists (idempotent).
     const { default: AcademyEnrollment } = await import("./models/academyEnrollmentModel.js");

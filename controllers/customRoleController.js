@@ -9,10 +9,25 @@ const ensureSchema = async () => {
   await CustomRole.sync();
   try {
     const { DataTypes: DT } = await import("sequelize");
-    const desc = await sequelize.getQueryInterface().describeTable("contacts");
-    if (!desc.custom_role_id) {
-      await sequelize.getQueryInterface().addColumn("contacts", "custom_role_id", { type: DT.INTEGER, allowNull: true });
+    // custom_role_id on every assignable table (so /api/roles/assign/:type/:id
+    // doesn't fail with "no such column" when the boot migration hasn't run).
+    for (const t of ["contacts", "hr_users", "users", "ojts", "students"]) {
+      try {
+        const desc = await sequelize.getQueryInterface().describeTable(t);
+        if (!desc.custom_role_id) {
+          await sequelize.getQueryInterface().addColumn(t, "custom_role_id", { type: DT.INTEGER, allowNull: true });
+          console.log(`✅ Added custom_role_id column to ${t}`);
+        }
+      } catch {}
     }
+    // custom_roles.allowed_pages (page permissions per role) — added later, may be missing on older installs.
+    try {
+      const desc = await sequelize.getQueryInterface().describeTable("custom_roles");
+      if (!desc.allowed_pages) {
+        await sequelize.getQueryInterface().addColumn("custom_roles", "allowed_pages", { type: DT.JSON, allowNull: true });
+        console.log("✅ Added allowed_pages column to custom_roles");
+      }
+    } catch {}
   } catch {}
   bootstrapped = true;
 };
@@ -192,10 +207,24 @@ export const customRoleController = {
         `UPDATE ${table} SET custom_role_id = :rid WHERE id = :id`,
         { replacements: { rid: custom_role_id || null, id }, type: QueryTypes.UPDATE }
       );
-      return res.status(200).json({ message: "Role assigned", custom_role_id: custom_role_id || null });
+      // Read back the row to confirm the column actually persisted. If the
+      // SELECT shows a different value, surface that — silent failures here
+      // were leaving role-logins as plain HR accounts.
+      const [row] = await sequelize.query(
+        `SELECT custom_role_id FROM ${table} WHERE id = :id`,
+        { replacements: { id }, type: QueryTypes.SELECT }
+      );
+      const saved = row ? row.custom_role_id : null;
+      const expected = custom_role_id || null;
+      if (String(saved) !== String(expected)) {
+        return res.status(500).json({
+          message: `Assignment didn't persist. Expected custom_role_id=${expected} but DB has ${saved}. Try restarting the backend so the migration runs.`,
+        });
+      }
+      return res.status(200).json({ message: "Role assigned", custom_role_id: expected });
     } catch (err) {
       console.error("roles assign:", err);
-      return res.status(500).json({ message: "Failed to assign role" });
+      return res.status(500).json({ message: err.message || "Failed to assign role" });
     }
   },
 };

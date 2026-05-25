@@ -98,6 +98,34 @@ export const authController = {
             const isPasswordValid = hr.verifyPassword(inputPassword);
             if (isPasswordValid) {
               console.log("✅ Auto-detected: HR");
+              // If the HR account is linked to a custom role, treat this as
+              // a separate "role" login (NOT HR). This prevents the user
+              // from ever landing on HR-default pages.
+              if (hr.custom_role_id) {
+                try {
+                  const { default: CustomRole } = await import("../models/customRoleModel.js");
+                  const role = await CustomRole.findByPk(hr.custom_role_id);
+                  if (role) {
+                    let pages = role.allowed_pages;
+                    if (typeof pages === "string") {
+                      try { pages = JSON.parse(pages); } catch { pages = []; }
+                    }
+                    const allowedPages = Array.isArray(pages) ? pages : [];
+                    console.log(`🔐 Role login: ${hr.email} → ${role.name} (${allowedPages.length} pages)`);
+                    return res.status(200).json({
+                      message: "Role login successful",
+                      user: {
+                        id: hr.id,
+                        role: "role",                          // ← distinct role identity
+                        email: hr.email,
+                        allowedPages,
+                        customRole: { id: role.id, name: role.name },
+                      },
+                    });
+                  }
+                } catch (e) { console.error("Custom role lookup failed:", e.message); }
+              }
+              // Plain HR — no custom role attached.
               return res.status(200).json({
                 message: "HR login successful",
                 user: {
@@ -105,6 +133,7 @@ export const authController = {
                   role: "hr",
                   email: hr.email,
                   allowedPages: hr.allowed_pages || null,
+                  customRole: null,
                 },
               });
             }
@@ -541,9 +570,21 @@ export const authController = {
     try {
       console.log("🔍 Checking for existing HR user...")
 
+      // Idempotent: if the email already exists, reset its password and
+      // return the existing row (so the role-creation flow can re-link).
       const existingHr = await HrUser.findOne({ where: { email } })
       if (existingHr) {
-        return res.status(400).json({ message: "HR email already exists" })
+        existingHr.password = password   // beforeUpdate hook will hash it
+        await existingHr.save()
+        console.log(`🔄 HR account ${email} already existed — password reset.`)
+        return res.status(200).json({
+          message: "Existing HR account updated",
+          hr: {
+            id: existingHr.id,
+            email: existingHr.email,
+            createdAt: existingHr.createdAt,
+          },
+        })
       }
 
       console.log("🔐 Creating HR user with hashed password...")
@@ -594,20 +635,34 @@ export const authController = {
     }
   },
 
-  // ✅ Enhanced HR list retrieval
+  // ✅ Enhanced HR list retrieval — excludes HR rows linked to a custom role
+  // because those represent "role logins" managed from the Roles page, not
+  // real HR accounts.
   getHrList: async (req, res) => {
     try {
-      console.log("📋 Fetching HR users list...")
+      console.log("📋 Fetching HR users list (excluding role logins)…")
 
+      // Use a raw where that works on both MySQL/Postgres and SQLite.
+      // (Sequelize Op.is / null comparison sometimes misbehaves on SQLite.)
+      const { Op } = await import("sequelize");
       const hrList = await HrUser.findAll({
-        attributes: ["id", "email", "createdAt"],
+        attributes: ["id", "email", "createdAt", "custom_role_id"],
+        where: {
+          [Op.or]: [
+            { custom_role_id: null },
+            { custom_role_id: { [Op.eq]: null } },
+          ],
+        },
         order: [["createdAt", "DESC"]],
       })
 
-      console.log(`✅ Found ${hrList.length} HR users`)
+      // Belt-and-braces filter in JS too, in case the DB returned 0/"" instead of null.
+      const realHr = hrList.filter((hr) => !hr.custom_role_id);
+
+      console.log(`✅ Found ${realHr.length} HR users (filtered out ${hrList.length - realHr.length} role login(s))`)
 
       return res.status(200).json({
-        hrList: hrList.map((hr) => ({
+        hrList: realHr.map((hr) => ({
           id: hr.id,
           email: hr.email,
           createdAt: hr.createdAt,
