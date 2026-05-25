@@ -185,7 +185,21 @@ export const createContact = async (req, res) => {
       emails,
       addresses,
       socials,
+      family,
+      education,
+      experience,
+      office,
+      health,
+      emergency,
     } = req.body;
+
+    const parseJson = (v) => (typeof v === "string" ? (() => { try { return JSON.parse(v); } catch { return null; } })() : v) || null;
+    family     = parseJson(family);
+    education  = parseJson(education);
+    experience = parseJson(experience);
+    office     = parseJson(office);
+    health     = parseJson(health);
+    emergency  = parseJson(emergency);
 
     is_syed = is_syed === true || is_syed === "true";
 
@@ -279,6 +293,12 @@ export const createContact = async (req, res) => {
         dob: new Date(dob),
         profile_picture,
         is_syed,
+        family,
+        education,
+        experience,
+        office,
+        health,
+        emergency,
       },
       { transaction }
     );
@@ -359,7 +379,15 @@ export const updateContact = async (req, res) => {
       emails,
       addresses,
       socials,
+      family,
+      education,
+      experience,
+      office,
+      health,
+      emergency,
     } = req.body;
+
+    const parseJson = (v) => (typeof v === "string" ? (() => { try { return JSON.parse(v); } catch { return null; } })() : v);
 
     is_syed = is_syed !== undefined ? (is_syed === true || is_syed === "true") : contact.is_syed;
     const finalGender = gender || contact.gender;
@@ -417,6 +445,12 @@ export const updateContact = async (req, res) => {
         dob: dob ? new Date(dob) : contact.dob,
         profile_picture,
         is_syed,
+        family:     family     !== undefined ? parseJson(family)     : contact.family,
+        education:  education  !== undefined ? parseJson(education)  : contact.education,
+        experience: experience !== undefined ? parseJson(experience) : contact.experience,
+        office:     office     !== undefined ? parseJson(office)     : contact.office,
+        health:     health     !== undefined ? parseJson(health)     : contact.health,
+        emergency:  emergency  !== undefined ? parseJson(emergency)  : contact.emergency,
       },
       { transaction }
     );
