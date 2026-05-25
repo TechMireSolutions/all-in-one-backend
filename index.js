@@ -189,6 +189,21 @@ app.listen(PORT, async () => {
       if (!desc.grading_method) {
         await sequelize.getQueryInterface().addColumn("academy_course_contents", "grading_method", { type: DT.STRING, allowNull: true, defaultValue: "Highest grade" });
       }
+      if (!desc.time_per_question_seconds) {
+        await sequelize.getQueryInterface().addColumn("academy_course_contents", "time_per_question_seconds", { type: DT.INTEGER, allowNull: true, defaultValue: 0 });
+      }
+      if (!desc.negative_marks) {
+        await sequelize.getQueryInterface().addColumn("academy_course_contents", "negative_marks", { type: DT.FLOAT, allowNull: true, defaultValue: 0 });
+      }
+    } catch {}
+    // Ensure attempts.score is FLOAT (was INTEGER originally — negative marking needs decimals).
+    try {
+      const desc = await sequelize.getQueryInterface().describeTable("academy_quiz_attempts");
+      const { DataTypes: DT } = await import("sequelize");
+      if (desc.score && /int/i.test(desc.score.type || "")) {
+        await sequelize.getQueryInterface().changeColumn("academy_quiz_attempts", "score", { type: DT.FLOAT, allowNull: true });
+        console.log("✅ Changed academy_quiz_attempts.score from INTEGER to FLOAT");
+      }
     } catch {}
     // Add file_url column to academy_course_contents if it's missing (existing installs).
     try {
