@@ -213,11 +213,14 @@ export const createContact = async (req, res) => {
       return res.status(400).json({ message: cnicCheck.message });
     }
 
-    // Check unique CNIC in database
-    const existingCnic = await Contact.findOne({ where: { cnic } });
+    // Check unique CNIC — match by digits only so formats with/without dashes
+    // are treated as the same record.
+    const cnicDigits = String(cnic).replace(/\D/g, "");
+    const allContacts = await Contact.findAll({ attributes: ["id", "cnic"] });
+    const existingCnic = allContacts.find((c) => String(c.cnic || "").replace(/\D/g, "") === cnicDigits);
     if (existingCnic) {
       await transaction.rollback();
-      return res.status(400).json({ message: `A contact with CNIC ${cnic} already exists.` });
+      return res.status(400).json({ message: `A contact with CNIC ${cnic} already exists (id=${existingCnic.id}).` });
     }
 
     // Parse sub-arrays
@@ -265,24 +268,31 @@ export const createContact = async (req, res) => {
     }
 
     // 6. Save Contact Core Record
-    const newContact = await Contact.create(
-      {
-        first_name: cleanFirstName,
-        last_name: cleanLastName,
-        cnic,
-        gender,
-        dob: new Date(dob),
-        profile_picture,
-        is_syed,
-        family,
-        education,
-        experience,
-        office,
-        health,
-        emergency,
-      },
-      { transaction }
-    );
+    // Build the payload; only include JSON-block fields that the DB actually
+    // has, so the insert doesn't fail on servers where the migration for
+    // family/education/etc. hasn't run yet.
+    const corePayload = {
+      first_name: cleanFirstName,
+      last_name: cleanLastName,
+      cnic,
+      gender,
+      dob: new Date(dob),
+      profile_picture,
+      is_syed,
+    };
+    try {
+      const desc = await sequelize.getQueryInterface().describeTable("contacts");
+      if (desc.family)     corePayload.family     = family;
+      if (desc.education)  corePayload.education  = education;
+      if (desc.experience) corePayload.experience = experience;
+      if (desc.office)     corePayload.office     = office;
+      if (desc.health)     corePayload.health     = health;
+      if (desc.emergency)  corePayload.emergency  = emergency;
+    } catch {
+      // describeTable failed — fall back to including everything
+      Object.assign(corePayload, { family, education, experience, office, health, emergency });
+    }
+    const newContact = await Contact.create(corePayload, { transaction });
 
     // Save sub-records
     if (parsedPhones.length > 0) {
@@ -416,25 +426,34 @@ export const updateContact = async (req, res) => {
       profile_picture = `/uploads/contacts/${filename}`;
     }
 
-    // Update Core Model
-    await contact.update(
-      {
-        first_name: cleanFirstName,
-        last_name: cleanLastName,
-        cnic: cnic || contact.cnic,
-        gender: finalGender,
-        dob: dob ? new Date(dob) : contact.dob,
-        profile_picture,
-        is_syed,
-        family:     family     !== undefined ? parseJson(family)     : contact.family,
-        education:  education  !== undefined ? parseJson(education)  : contact.education,
-        experience: experience !== undefined ? parseJson(experience) : contact.experience,
-        office:     office     !== undefined ? parseJson(office)     : contact.office,
-        health:     health     !== undefined ? parseJson(health)     : contact.health,
-        emergency:  emergency  !== undefined ? parseJson(emergency)  : contact.emergency,
-      },
-      { transaction }
-    );
+    // Update Core Model — only include JSON-block fields that exist on the DB.
+    const updPayload = {
+      first_name: cleanFirstName,
+      last_name: cleanLastName,
+      cnic: cnic || contact.cnic,
+      gender: finalGender,
+      dob: dob ? new Date(dob) : contact.dob,
+      profile_picture,
+      is_syed,
+    };
+    try {
+      const desc = await sequelize.getQueryInterface().describeTable("contacts");
+      if (desc.family)     updPayload.family     = family     !== undefined ? parseJson(family)     : contact.family;
+      if (desc.education)  updPayload.education  = education  !== undefined ? parseJson(education)  : contact.education;
+      if (desc.experience) updPayload.experience = experience !== undefined ? parseJson(experience) : contact.experience;
+      if (desc.office)     updPayload.office     = office     !== undefined ? parseJson(office)     : contact.office;
+      if (desc.health)     updPayload.health     = health     !== undefined ? parseJson(health)     : contact.health;
+      if (desc.emergency)  updPayload.emergency  = emergency  !== undefined ? parseJson(emergency)  : contact.emergency;
+    } catch {
+      // Best-effort fallback
+      if (family     !== undefined) updPayload.family     = parseJson(family);
+      if (education  !== undefined) updPayload.education  = parseJson(education);
+      if (experience !== undefined) updPayload.experience = parseJson(experience);
+      if (office     !== undefined) updPayload.office     = parseJson(office);
+      if (health     !== undefined) updPayload.health     = parseJson(health);
+      if (emergency  !== undefined) updPayload.emergency  = parseJson(emergency);
+    }
+    await contact.update(updPayload, { transaction });
 
     // Replace relational lists
     if (phoneNumbers) {
