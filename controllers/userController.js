@@ -185,7 +185,10 @@ export const registerUser = async (req, res) => {
       login_access,
     } = req.body
 
-    // Define required fields and validate their presence
+    // Define required fields and validate their presence.
+    // NOTE: degree / institute / grade / year / has_disease are no longer
+    // required here — those fields were moved to the Contacts page and
+    // are stored on the Contact JSON blocks.
     const requiredFields = {
       employee_id,
       registration_date,
@@ -198,15 +201,10 @@ export const registerUser = async (req, res) => {
       permanent_address,
       contact_number,
       email,
-      degree,
-      institute,
-      grade,
-      year,
       in_time,
       out_time,
       Salary_Cap,
       guardian_phone,
-      has_disease,
     }
 
     for (const [key, value] of Object.entries(requiredFields)) {
