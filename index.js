@@ -54,7 +54,9 @@ import academyQuizRoutes from "./routes/academyQuizRoute.js";
 import academyAssignmentRoutes from "./routes/academyAssignmentRoute.js";
 import customRoleRoutes from "./routes/customRoleRoute.js";
 import "./models/customRoleModel.js";
+import "./models/projectTrackerModel.js";
 
+import projectTrackerRoutes from "./routes/projectTrackerRoute.js";
 
 // Initialize Express app
 const app = express();
@@ -103,6 +105,7 @@ app.use("/api/academy/course-settings", academyCourseSettingsRoutes);
 app.use("/api/academy/quiz", academyQuizRoutes);
 app.use("/api/academy/assignments", academyAssignmentRoutes);
 app.use("/api/roles", customRoleRoutes);
+app.use("/api/project-tracker", projectTrackerRoutes);
 
 
 // Root endpoint (to check if the backend is running)
@@ -150,49 +153,18 @@ app.listen(PORT, async () => {
           }
         } catch {}
       }
-      // custom_roles.allowed_pages — added in a later release.
-      try {
-        const desc = await sequelize.getQueryInterface().describeTable("custom_roles");
-        if (!desc.allowed_pages) {
-          await sequelize.getQueryInterface().addColumn("custom_roles", "allowed_pages", { type: DT.JSON, allowNull: true });
-          console.log("✅ Added allowed_pages column to custom_roles");
-        }
-      } catch {}
     } catch (e) { console.error("custom_roles bootstrap:", e); }
-    // Ensure Contact-related tables exist (idempotent). Try alter first;
-    // if that fails (e.g. SQLite refusing certain ALTER TABLE ops), fall
-    // back to a non-altering sync and add the new JSON columns by hand.
+    // Ensure Contact-related tables exist (idempotent).
     try {
       const { Contact, ContactPhoneNumber, ContactEmail, ContactAddress, ContactSocial, MergeLog } = await import("./models/contactModel.js");
-      try {
-        await Contact.sync({ alter: true });
-        await ContactPhoneNumber.sync({ alter: true });
-        await ContactEmail.sync({ alter: true });
-        await ContactAddress.sync({ alter: true });
-        await ContactSocial.sync({ alter: true });
-        await MergeLog.sync({ alter: true });
-        console.log("✅ Contact tables synced successfully");
-      } catch (alterErr) {
-        console.warn("Contact alter sync failed — falling back to plain sync + manual column adds:", alterErr.message);
-        await Contact.sync();
-        await ContactPhoneNumber.sync();
-        await ContactEmail.sync();
-        await ContactAddress.sync();
-        await ContactSocial.sync();
-        await MergeLog.sync();
-        // Manually add the new JSON columns to contacts if they're missing.
-        const { DataTypes: DT } = await import("sequelize");
-        const desc = await sequelize.getQueryInterface().describeTable("contacts").catch(() => ({}));
-        for (const col of ["family", "education", "experience", "office", "health", "emergency"]) {
-          if (!desc[col]) {
-            try {
-              await sequelize.getQueryInterface().addColumn("contacts", col, { type: DT.JSON, allowNull: true });
-              console.log(`✅ Added ${col} column to contacts`);
-            } catch {}
-          }
-        }
-      }
-    } catch (e) { console.error("Contact tables bootstrap fatal error:", e.message); }
+      await Contact.sync({ alter: true });
+      await ContactPhoneNumber.sync({ alter: true });
+      await ContactEmail.sync({ alter: true });
+      await ContactAddress.sync({ alter: true });
+      await ContactSocial.sync({ alter: true });
+      await MergeLog.sync({ alter: true });
+      console.log("✅ Contact tables synced successfully");
+    } catch (e) { console.error("Contact tables sync error:", e.message); }
 
     // Ensure the academy_enrollments table exists (idempotent).
     const { default: AcademyEnrollment } = await import("./models/academyEnrollmentModel.js");
@@ -220,21 +192,6 @@ app.listen(PORT, async () => {
       if (!desc.grading_method) {
         await sequelize.getQueryInterface().addColumn("academy_course_contents", "grading_method", { type: DT.STRING, allowNull: true, defaultValue: "Highest grade" });
       }
-      if (!desc.time_per_question_seconds) {
-        await sequelize.getQueryInterface().addColumn("academy_course_contents", "time_per_question_seconds", { type: DT.INTEGER, allowNull: true, defaultValue: 0 });
-      }
-      if (!desc.negative_marks) {
-        await sequelize.getQueryInterface().addColumn("academy_course_contents", "negative_marks", { type: DT.FLOAT, allowNull: true, defaultValue: 0 });
-      }
-    } catch {}
-    // Ensure attempts.score is FLOAT (was INTEGER originally — negative marking needs decimals).
-    try {
-      const desc = await sequelize.getQueryInterface().describeTable("academy_quiz_attempts");
-      const { DataTypes: DT } = await import("sequelize");
-      if (desc.score && /int/i.test(desc.score.type || "")) {
-        await sequelize.getQueryInterface().changeColumn("academy_quiz_attempts", "score", { type: DT.FLOAT, allowNull: true });
-        console.log("✅ Changed academy_quiz_attempts.score from INTEGER to FLOAT");
-      }
     } catch {}
     // Add file_url column to academy_course_contents if it's missing (existing installs).
     try {
@@ -247,6 +204,28 @@ app.listen(PORT, async () => {
         console.log("✅ Added file_url column to academy_course_contents");
       }
     } catch {}
+    // Sync project_trackers table — convert status from ENUM to VARCHAR if needed
+    try {
+      // Convert ENUM → VARCHAR BEFORE sync (PostgreSQL needs USING clause).
+      // Wrapped in try/catch — fine to fail on first run (table not created yet)
+      // or on subsequent runs (already VARCHAR / SQLite).
+      try {
+        await sequelize.query(
+          `ALTER TABLE project_trackers ALTER COLUMN status TYPE VARCHAR(50) USING status::text`
+        );
+        // Drop the old enum type if it still exists
+        await sequelize.query(
+          `DROP TYPE IF EXISTS "enum_project_trackers_status"`
+        );
+        console.log("✅ project_trackers status column converted to VARCHAR");
+      } catch (e) {
+        // Already VARCHAR, table doesn't exist yet, or SQLite — safe to ignore
+      }
+      const { default: ProjectTracker } = await import("./models/projectTrackerModel.js");
+      await ProjectTracker.sync();
+      console.log("✅ project_trackers table synced");
+    } catch (e) { console.error("project_trackers sync error:", e.message); }
+
     console.log(`🚀 Server running on port ${PORT}`);
   } catch (error) {
     console.error("Failed to start server:", error);

@@ -57,24 +57,43 @@ const getNameSuggestions = (firstName, lastName) => {
 const validateCnicDetailed = (cnic, gender) => {
   if (!cnic) return { valid: false, message: "CNIC is required." };
 
-  // Accept either format: XXXXX-XXXXXXX-X (dashes) or 13 plain digits.
-  const cleaned = String(cnic).replace(/\D/g, "");
-  if (cleaned.length !== 13) {
-    return { valid: false, message: "CNIC must be 13 digits (with or without dashes)." };
+  // 1. Regex validation for XXXXX-XXXXXXX-X
+  const regex = /^\d{5}-\d{7}-\d{1}$/;
+  if (!regex.test(cnic)) {
+    return { valid: false, message: "CNIC format must be XXXXX-XXXXXXX-X" };
   }
 
-  // Gender parity convention: last digit is odd for Male, even for Female.
-  const lastDigit = parseInt(cleaned[12], 10);
+  const digits = cnic.replace(/\D/g, "");
+
+  // 2. Gender parity check: last digit is even for female, odd for male
+  const lastDigit = parseInt(digits[12], 10);
   if (gender === "Male" && lastDigit % 2 === 0) {
     return { valid: false, message: "Last digit of CNIC for 'Male' must be odd." };
   }
-  if (gender === "Female" && lastDigit % 2 !== 0) {
-    return { valid: false, message: "Last digit of CNIC for 'Female' must be even." };
+  if (gender === "Female" && lastDigit % 2 !== 1 && lastDigit % 2 !== 0 && lastDigit !== 0) {
+    // Note: historically females get even numbers (0, 2, 4, 6, 8)
+    if (lastDigit % 2 !== 0) {
+      return { valid: false, message: "Last digit of CNIC for 'Female' must be even." };
+    }
   }
 
-  // Note: NADRA CNICs do NOT use a Luhn checksum. The earlier Luhn check
-  // wrongly rejected valid real-world CNICs — we only enforce format and
-  // gender parity now.
+  // 3. Luhn-based mod-10 check on the 13 digits
+  let sum = 0;
+  let shouldDouble = false;
+  for (let i = digits.length - 1; i >= 0; i--) {
+    let val = parseInt(digits[i], 10);
+    if (shouldDouble) {
+      val *= 2;
+      if (val > 9) val -= 9;
+    }
+    sum += val;
+    shouldDouble = !shouldDouble;
+  }
+  
+  if (sum % 10 !== 0) {
+    return { valid: false, message: "CNIC failed Luhn checksum algorithm validation." };
+  }
+
   return { valid: true };
 };
 
@@ -166,21 +185,7 @@ export const createContact = async (req, res) => {
       emails,
       addresses,
       socials,
-      family,
-      education,
-      experience,
-      office,
-      health,
-      emergency,
     } = req.body;
-
-    const parseJson = (v) => (typeof v === "string" ? (() => { try { return JSON.parse(v); } catch { return null; } })() : v) || null;
-    family     = parseJson(family);
-    education  = parseJson(education);
-    experience = parseJson(experience);
-    office     = parseJson(office);
-    health     = parseJson(health);
-    emergency  = parseJson(emergency);
 
     is_syed = is_syed === true || is_syed === "true";
 
@@ -274,12 +279,6 @@ export const createContact = async (req, res) => {
         dob: new Date(dob),
         profile_picture,
         is_syed,
-        family,
-        education,
-        experience,
-        office,
-        health,
-        emergency,
       },
       { transaction }
     );
@@ -360,15 +359,7 @@ export const updateContact = async (req, res) => {
       emails,
       addresses,
       socials,
-      family,
-      education,
-      experience,
-      office,
-      health,
-      emergency,
     } = req.body;
-
-    const parseJson = (v) => (typeof v === "string" ? (() => { try { return JSON.parse(v); } catch { return null; } })() : v);
 
     is_syed = is_syed !== undefined ? (is_syed === true || is_syed === "true") : contact.is_syed;
     const finalGender = gender || contact.gender;
@@ -426,12 +417,6 @@ export const updateContact = async (req, res) => {
         dob: dob ? new Date(dob) : contact.dob,
         profile_picture,
         is_syed,
-        family:     family     !== undefined ? parseJson(family)     : contact.family,
-        education:  education  !== undefined ? parseJson(education)  : contact.education,
-        experience: experience !== undefined ? parseJson(experience) : contact.experience,
-        office:     office     !== undefined ? parseJson(office)     : contact.office,
-        health:     health     !== undefined ? parseJson(health)     : contact.health,
-        emergency:  emergency  !== undefined ? parseJson(emergency)  : contact.emergency,
       },
       { transaction }
     );

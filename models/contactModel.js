@@ -96,13 +96,6 @@ const Contact = sequelize.define(
       defaultValue: false,
       allowNull: false,
     },
-    // Extra profile blocks (JSON) — added to support the tabbed contact form.
-    family:     { type: DataTypes.JSON, allowNull: true, defaultValue: null, comment: "Father/Mother name/phone/email" },
-    education:  { type: DataTypes.JSON, allowNull: true, defaultValue: null, comment: "Last education degree/institute/grade/year" },
-    experience: { type: DataTypes.JSON, allowNull: true, defaultValue: null, comment: "Past teaching and other professional experience" },
-    office:     { type: DataTypes.JSON, allowNull: true, defaultValue: null, comment: "Employee/office details (employee_id, joining_date, post, etc.)" },
-    health:     { type: DataTypes.JSON, allowNull: true, defaultValue: null, comment: "Any disease + details" },
-    emergency:  { type: DataTypes.JSON, allowNull: true, defaultValue: null, comment: "Emergency contact name/phone/relation" },
     current_age_solar: {
       type: DataTypes.VIRTUAL,
       get() {

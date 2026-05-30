@@ -1,6 +1,6 @@
 node_modules/
 .env
-.env.*
-*.sqlite
-*.sqlite3
+*.log
+database.sqlite
 uploads/
+.DS_Store
