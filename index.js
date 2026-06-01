@@ -54,6 +54,8 @@ import academyQuizRoutes from "./routes/academyQuizRoute.js";
 import academyAssignmentRoutes from "./routes/academyAssignmentRoute.js";
 import customRoleRoutes from "./routes/customRoleRoute.js";
 import "./models/customRoleModel.js";
+import registrationRoutes from "./routes/registrationRoute.js";
+import "./models/registrationModel.js";
 import "./models/projectTrackerModel.js";
 
 import projectTrackerRoutes from "./routes/projectTrackerRoute.js";
@@ -105,6 +107,7 @@ app.use("/api/academy/course-settings", academyCourseSettingsRoutes);
 app.use("/api/academy/quiz", academyQuizRoutes);
 app.use("/api/academy/assignments", academyAssignmentRoutes);
 app.use("/api/roles", customRoleRoutes);
+app.use("/api/registration", registrationRoutes);
 app.use("/api/project-tracker", projectTrackerRoutes);
 
 
@@ -154,6 +157,22 @@ app.listen(PORT, async () => {
         } catch {}
       }
     } catch (e) { console.error("custom_roles bootstrap:", e); }
+
+    // ── Registration module: sync 1 parent + 8 child tables ─────────────────
+    try {
+      const rm = await import("./models/registrationModel.js");
+      const order = ["RegistrationForm", "RegistrationSection", "RegistrationField",
+                     "Registration", "RegistrationAnswer", "RegistrationStatusLog",
+                     "RegistrationRole", "RegistrationStudent", "RegistrationOJT"];
+      for (const name of order) {
+        try { await rm[name].sync({ alter: true }); }
+        catch (e) {
+          console.warn(`Registration: alter sync failed for ${name}, falling back:`, e.message);
+          await rm[name].sync();
+        }
+      }
+      console.log("✅ Registration tables synced (1 parent + 8 children)");
+    } catch (e) { console.error("Registration bootstrap:", e.message); }
     // Ensure Contact-related tables exist + drop legacy JSON columns.
     try {
       const cm = await import("./models/contactModel.js");
