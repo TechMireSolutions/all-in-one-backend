@@ -9,8 +9,27 @@ import {
   ContactEmail,
   ContactAddress,
   ContactSocial,
+  ContactEmergency,
+  ContactEducation,
+  ContactExperience,
+  ContactOffice,
+  ContactHealth,
   MergeLog,
 } from "../models/contactModel.js";
+
+// Standard include block used by every read endpoint. Centralized here so we
+// don't have to repeat the 9 child tables in every query.
+const FULL_INCLUDES = [
+  { model: ContactPhoneNumber, as: "phoneNumbers" },
+  { model: ContactEmail,       as: "emails"       },
+  { model: ContactAddress,     as: "addresses"    },
+  { model: ContactSocial,      as: "socials"      },
+  { model: ContactEmergency,   as: "emergencies"  },
+  { model: ContactEducation,   as: "educations"   },
+  { model: ContactExperience,  as: "experiences"  },
+  { model: ContactOffice,      as: "offices"      },
+  { model: ContactHealth,      as: "healths"      },
+];
 import { findDuplicates, calculateJaroWinkler } from "../services/duplicateService.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -127,12 +146,7 @@ const validateSocialUrl = (platform, url) => {
 export const getContacts = async (req, res) => {
   try {
     const contacts = await Contact.findAll({
-      include: [
-        { model: ContactPhoneNumber, as: "phoneNumbers" },
-        { model: ContactEmail, as: "emails" },
-        { model: ContactAddress, as: "addresses" },
-        { model: ContactSocial, as: "socials" },
-      ],
+      include: FULL_INCLUDES,
       order: [["createdAt", "DESC"]],
     });
 
@@ -148,14 +162,7 @@ export const getContacts = async (req, res) => {
  */
 export const getContactById = async (req, res) => {
   try {
-    const contact = await Contact.findByPk(req.params.id, {
-      include: [
-        { model: ContactPhoneNumber, as: "phoneNumbers" },
-        { model: ContactEmail, as: "emails" },
-        { model: ContactAddress, as: "addresses" },
-        { model: ContactSocial, as: "socials" },
-      ],
-    });
+    const contact = await Contact.findByPk(req.params.id, { include: FULL_INCLUDES });
 
     if (!contact) {
       return res.status(404).json({ message: "Contact not found" });
@@ -185,6 +192,11 @@ export const createContact = async (req, res) => {
       emails,
       addresses,
       socials,
+      emergencies,
+      educations,
+      experiences,
+      offices,
+      healths,
     } = req.body;
 
     is_syed = is_syed === true || is_syed === "true";
@@ -228,11 +240,24 @@ export const createContact = async (req, res) => {
       return res.status(400).json({ message: `A contact with CNIC ${cnic} already exists (id=${existingCnic.id}).` });
     }
 
-    // Parse sub-arrays
-    const parsedPhones = typeof phoneNumbers === "string" ? JSON.parse(phoneNumbers) : (phoneNumbers || []);
-    const parsedEmails = typeof emails === "string" ? JSON.parse(emails) : (emails || []);
-    const parsedAddresses = typeof addresses === "string" ? JSON.parse(addresses) : (addresses || []);
-    const parsedSocials = typeof socials === "string" ? JSON.parse(socials) : (socials || []);
+    // Parse all sub-arrays (multipart often sends them as JSON strings).
+    const parseArr = (v) => {
+      if (typeof v === "string") {
+        try { const p = JSON.parse(v); return Array.isArray(p) ? p : []; } catch { return []; }
+      }
+      return Array.isArray(v) ? v : [];
+    };
+    const parsedPhones       = parseArr(phoneNumbers);
+    const parsedEmails       = parseArr(emails);
+    const parsedAddresses    = parseArr(addresses);
+    const parsedSocials      = parseArr(socials);
+    const parsedEmergencies  = parseArr(emergencies);
+    const parsedEducations   = parseArr(educations);
+    const parsedExperiences  = parseArr(experiences);
+    const parsedOffices      = parseArr(offices);
+    const parsedHealths      = parseArr(healths);
+
+    const emailRegex = /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/;
 
     // Validate Sub-Models
     for (const phone of parsedPhones) {
@@ -243,8 +268,6 @@ export const createContact = async (req, res) => {
     }
 
     for (const email of parsedEmails) {
-      // Basic RFC 5322 regex validation
-      const emailRegex = /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/;
       if (!emailRegex.test(email.email_address)) {
         await transaction.rollback();
         return res.status(400).json({ message: `Email address ${email.email_address} is invalid.` });
@@ -255,6 +278,67 @@ export const createContact = async (req, res) => {
       if (!validateSocialUrl(social.platform, social.url)) {
         await transaction.rollback();
         return res.status(400).json({ message: `URL for platform ${social.platform} is malformed or does not match.` });
+      }
+    }
+
+    // Emergency: name + relation + phone (E.164) required; email optional but if present must be valid.
+    for (const em of parsedEmergencies) {
+      if (!em.name || !em.relation || !em.phone_number) {
+        await transaction.rollback();
+        return res.status(400).json({ message: "Each emergency contact needs a name, relation and phone." });
+      }
+      if (!validateE164(em.phone_number)) {
+        await transaction.rollback();
+        return res.status(400).json({ message: `Emergency phone ${em.phone_number} must be E.164.` });
+      }
+      if (em.email && !emailRegex.test(em.email)) {
+        await transaction.rollback();
+        return res.status(400).json({ message: `Emergency email ${em.email} is invalid.` });
+      }
+    }
+
+    // Education: degree + institute required; end_year ≥ start_year.
+    for (const ed of parsedEducations) {
+      if (!ed.degree || !ed.institute) {
+        await transaction.rollback();
+        return res.status(400).json({ message: "Each education entry needs a degree and institute." });
+      }
+      if (ed.start_year && ed.end_year && Number(ed.end_year) < Number(ed.start_year)) {
+        await transaction.rollback();
+        return res.status(400).json({ message: `Education end_year (${ed.end_year}) cannot be before start_year (${ed.start_year}).` });
+      }
+    }
+
+    // Experience: organization + post required; end_date ≥ start_date.
+    for (const xp of parsedExperiences) {
+      if (!xp.organization || !xp.post) {
+        await transaction.rollback();
+        return res.status(400).json({ message: "Each experience entry needs an organization and post." });
+      }
+      if (xp.start_date && xp.end_date && new Date(xp.end_date) < new Date(xp.start_date)) {
+        await transaction.rollback();
+        return res.status(400).json({ message: `Experience end_date cannot be before start_date.` });
+      }
+    }
+
+    // Office: employee_id required and globally unique.
+    for (const off of parsedOffices) {
+      if (!off.employee_id) {
+        await transaction.rollback();
+        return res.status(400).json({ message: "Each office record needs an employee_id." });
+      }
+      const dup = await ContactOffice.findOne({ where: { employee_id: off.employee_id } });
+      if (dup) {
+        await transaction.rollback();
+        return res.status(400).json({ message: `Employee ID "${off.employee_id}" is already in use.` });
+      }
+    }
+
+    // Health: disease required.
+    for (const h of parsedHealths) {
+      if (!h.disease) {
+        await transaction.rollback();
+        return res.status(400).json({ message: "Each health entry needs a disease name." });
       }
     }
 
@@ -272,32 +356,16 @@ export const createContact = async (req, res) => {
       profile_picture = `/uploads/contacts/${filename}`;
     }
 
-    // 6. Save Contact Core Record
-    // Build the payload; only include JSON-block fields that the DB actually
-    // has, so the insert doesn't fail on servers where the migration for
-    // family/education/etc. hasn't run yet.
-    const corePayload = {
+    // 6. Save Contact Core Record (all relational data lives in child tables now)
+    const newContact = await Contact.create({
       first_name: cleanFirstName,
-      last_name: cleanLastName,
+      last_name:  cleanLastName,
       cnic,
       gender,
       dob: new Date(dob),
       profile_picture,
       is_syed,
-    };
-    try {
-      const desc = await sequelize.getQueryInterface().describeTable("contacts");
-      if (desc.family)     corePayload.family     = family;
-      if (desc.education)  corePayload.education  = education;
-      if (desc.experience) corePayload.experience = experience;
-      if (desc.office)     corePayload.office     = office;
-      if (desc.health)     corePayload.health     = health;
-      if (desc.emergency)  corePayload.emergency  = emergency;
-    } catch {
-      // describeTable failed — fall back to including everything
-      Object.assign(corePayload, { family, education, experience, office, health, emergency });
-    }
-    const newContact = await Contact.create(corePayload, { transaction });
+    }, { transaction });
 
     // Save sub-records
     if (parsedPhones.length > 0) {
@@ -328,17 +396,45 @@ export const createContact = async (req, res) => {
       );
     }
 
+    if (parsedEmergencies.length > 0) {
+      await ContactEmergency.bulkCreate(
+        parsedEmergencies.map((em) => ({ ...em, contactId: newContact.id })),
+        { transaction }
+      );
+    }
+
+    if (parsedEducations.length > 0) {
+      await ContactEducation.bulkCreate(
+        parsedEducations.map((ed) => ({ ...ed, contactId: newContact.id })),
+        { transaction }
+      );
+    }
+
+    if (parsedExperiences.length > 0) {
+      await ContactExperience.bulkCreate(
+        parsedExperiences.map((xp) => ({ ...xp, contactId: newContact.id })),
+        { transaction }
+      );
+    }
+
+    if (parsedOffices.length > 0) {
+      await ContactOffice.bulkCreate(
+        parsedOffices.map((off) => ({ ...off, contactId: newContact.id })),
+        { transaction }
+      );
+    }
+
+    if (parsedHealths.length > 0) {
+      await ContactHealth.bulkCreate(
+        parsedHealths.map((h) => ({ ...h, contactId: newContact.id })),
+        { transaction }
+      );
+    }
+
     await transaction.commit();
 
-    // Fetch full saved contact
-    const fullContact = await Contact.findByPk(newContact.id, {
-      include: [
-        { model: ContactPhoneNumber, as: "phoneNumbers" },
-        { model: ContactEmail, as: "emails" },
-        { model: ContactAddress, as: "addresses" },
-        { model: ContactSocial, as: "socials" },
-      ],
-    });
+    // Fetch full saved contact with every child relation populated
+    const fullContact = await Contact.findByPk(newContact.id, { include: FULL_INCLUDES });
 
     res.status(201).json({
       message: "Contact created successfully",
@@ -375,10 +471,23 @@ export const updateContact = async (req, res) => {
       emails,
       addresses,
       socials,
+      emergencies,
+      educations,
+      experiences,
+      offices,
+      healths,
     } = req.body;
 
     is_syed = is_syed !== undefined ? (is_syed === true || is_syed === "true") : contact.is_syed;
     const finalGender = gender || contact.gender;
+    const emailRegexUpd = /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/;
+    const parseArrUpd = (v) => {
+      if (v === undefined || v === null) return undefined;
+      if (typeof v === "string") {
+        try { const p = JSON.parse(v); return Array.isArray(p) ? p : []; } catch { return []; }
+      }
+      return Array.isArray(v) ? v : [];
+    };
 
     // Normalize and Title Case Names
     let cleanFirstName = first_name ? toTitleCase(first_name.trim()) : contact.first_name;
@@ -423,33 +532,16 @@ export const updateContact = async (req, res) => {
       profile_picture = `/uploads/contacts/${filename}`;
     }
 
-    // Update Core Model — only include JSON-block fields that exist on the DB.
-    const updPayload = {
+    // Update core (relational data lives in child tables now)
+    await contact.update({
       first_name: cleanFirstName,
-      last_name: cleanLastName,
-      cnic: cnic || contact.cnic,
-      gender: finalGender,
-      dob: dob ? new Date(dob) : contact.dob,
+      last_name:  cleanLastName,
+      cnic:       cnic || contact.cnic,
+      gender:     finalGender,
+      dob:        dob ? new Date(dob) : contact.dob,
       profile_picture,
       is_syed,
-    };
-    try {
-      const desc = await sequelize.getQueryInterface().describeTable("contacts");
-      if (desc.family)     updPayload.family     = family     !== undefined ? parseJson(family)     : contact.family;
-      if (desc.education)  updPayload.education  = education  !== undefined ? parseJson(education)  : contact.education;
-      if (desc.experience) updPayload.experience = experience !== undefined ? parseJson(experience) : contact.experience;
-      if (desc.office)     updPayload.office     = office     !== undefined ? parseJson(office)     : contact.office;
-      if (desc.health)     updPayload.health     = health     !== undefined ? parseJson(health)     : contact.health;
-      if (desc.emergency)  updPayload.emergency  = emergency  !== undefined ? parseJson(emergency)  : contact.emergency;
-    } catch {
-      if (family     !== undefined) updPayload.family     = parseJson(family);
-      if (education  !== undefined) updPayload.education  = parseJson(education);
-      if (experience !== undefined) updPayload.experience = parseJson(experience);
-      if (office     !== undefined) updPayload.office     = parseJson(office);
-      if (health     !== undefined) updPayload.health     = parseJson(health);
-      if (emergency  !== undefined) updPayload.emergency  = parseJson(emergency);
-    }
-    await contact.update(updPayload, { transaction });
+    }, { transaction });
 
     // Replace relational lists
     if (phoneNumbers) {
@@ -507,16 +599,106 @@ export const updateContact = async (req, res) => {
       );
     }
 
+    // ── Emergency contacts (full destroy + bulkCreate, like phones/emails) ──
+    const upEmergencies = parseArrUpd(emergencies);
+    if (upEmergencies !== undefined) {
+      for (const em of upEmergencies) {
+        if (!em.name || !em.relation || !em.phone_number) {
+          await transaction.rollback();
+          return res.status(400).json({ message: "Each emergency contact needs a name, relation and phone." });
+        }
+        if (!validateE164(em.phone_number)) {
+          await transaction.rollback();
+          return res.status(400).json({ message: `Emergency phone ${em.phone_number} must be E.164.` });
+        }
+        if (em.email && !emailRegexUpd.test(em.email)) {
+          await transaction.rollback();
+          return res.status(400).json({ message: `Emergency email ${em.email} is invalid.` });
+        }
+      }
+      await ContactEmergency.destroy({ where: { contactId: contact.id }, transaction });
+      if (upEmergencies.length) {
+        await ContactEmergency.bulkCreate(upEmergencies.map((em) => ({ ...em, contactId: contact.id })), { transaction });
+      }
+    }
+
+    // ── Education ──
+    const upEducations = parseArrUpd(educations);
+    if (upEducations !== undefined) {
+      for (const ed of upEducations) {
+        if (!ed.degree || !ed.institute) {
+          await transaction.rollback();
+          return res.status(400).json({ message: "Each education entry needs a degree and institute." });
+        }
+        if (ed.start_year && ed.end_year && Number(ed.end_year) < Number(ed.start_year)) {
+          await transaction.rollback();
+          return res.status(400).json({ message: `Education end_year cannot be before start_year.` });
+        }
+      }
+      await ContactEducation.destroy({ where: { contactId: contact.id }, transaction });
+      if (upEducations.length) {
+        await ContactEducation.bulkCreate(upEducations.map((ed) => ({ ...ed, contactId: contact.id })), { transaction });
+      }
+    }
+
+    // ── Experience ──
+    const upExperiences = parseArrUpd(experiences);
+    if (upExperiences !== undefined) {
+      for (const xp of upExperiences) {
+        if (!xp.organization || !xp.post) {
+          await transaction.rollback();
+          return res.status(400).json({ message: "Each experience entry needs an organization and post." });
+        }
+        if (xp.start_date && xp.end_date && new Date(xp.end_date) < new Date(xp.start_date)) {
+          await transaction.rollback();
+          return res.status(400).json({ message: `Experience end_date cannot be before start_date.` });
+        }
+      }
+      await ContactExperience.destroy({ where: { contactId: contact.id }, transaction });
+      if (upExperiences.length) {
+        await ContactExperience.bulkCreate(upExperiences.map((xp) => ({ ...xp, contactId: contact.id })), { transaction });
+      }
+    }
+
+    // ── Office ──
+    const upOffices = parseArrUpd(offices);
+    if (upOffices !== undefined) {
+      for (const off of upOffices) {
+        if (!off.employee_id) {
+          await transaction.rollback();
+          return res.status(400).json({ message: "Each office record needs an employee_id." });
+        }
+        // employee_id must be unique across all contacts (excluding this contact's own previous office rows)
+        const dup = await ContactOffice.findOne({ where: { employee_id: off.employee_id } });
+        if (dup && dup.contactId !== contact.id) {
+          await transaction.rollback();
+          return res.status(400).json({ message: `Employee ID "${off.employee_id}" is already used by another contact.` });
+        }
+      }
+      await ContactOffice.destroy({ where: { contactId: contact.id }, transaction });
+      if (upOffices.length) {
+        await ContactOffice.bulkCreate(upOffices.map((off) => ({ ...off, contactId: contact.id })), { transaction });
+      }
+    }
+
+    // ── Health ──
+    const upHealths = parseArrUpd(healths);
+    if (upHealths !== undefined) {
+      for (const h of upHealths) {
+        if (!h.disease) {
+          await transaction.rollback();
+          return res.status(400).json({ message: "Each health entry needs a disease name." });
+        }
+      }
+      await ContactHealth.destroy({ where: { contactId: contact.id }, transaction });
+      if (upHealths.length) {
+        await ContactHealth.bulkCreate(upHealths.map((h) => ({ ...h, contactId: contact.id })), { transaction });
+      }
+    }
+
     await transaction.commit();
 
-    const fullContact = await Contact.findByPk(contact.id, {
-      include: [
-        { model: ContactPhoneNumber, as: "phoneNumbers" },
-        { model: ContactEmail, as: "emails" },
-        { model: ContactAddress, as: "addresses" },
-        { model: ContactSocial, as: "socials" },
-      ],
-    });
+    const fullContact = await Contact.findByPk(contact.id, { include: FULL_INCLUDES });
 
     res.status(200).json({
       message: "Contact updated successfully",
@@ -555,24 +737,10 @@ export const checkDuplicates = async (req, res) => {
   try {
     const { id } = req.query;
 
-    const allContacts = await Contact.findAll({
-      include: [
-        { model: ContactPhoneNumber, as: "phoneNumbers" },
-        { model: ContactEmail, as: "emails" },
-        { model: ContactAddress, as: "addresses" },
-        { model: ContactSocial, as: "socials" },
-      ],
-    });
+    const allContacts = await Contact.findAll({ include: FULL_INCLUDES });
 
     if (id) {
-      const candidate = await Contact.findByPk(id, {
-        include: [
-          { model: ContactPhoneNumber, as: "phoneNumbers" },
-          { model: ContactEmail, as: "emails" },
-          { model: ContactAddress, as: "addresses" },
-          { model: ContactSocial, as: "socials" },
-        ],
-      });
+      const candidate = await Contact.findByPk(id, { include: FULL_INCLUDES });
 
       if (!candidate) {
         return res.status(404).json({ message: "Candidate contact not found." });
@@ -619,25 +787,8 @@ export const mergeContacts = async (req, res) => {
       return res.status(400).json({ message: "Master ID and Source ID are required." });
     }
 
-    const master = await Contact.findByPk(masterId, {
-      include: [
-        { model: ContactPhoneNumber, as: "phoneNumbers" },
-        { model: ContactEmail, as: "emails" },
-        { model: ContactAddress, as: "addresses" },
-        { model: ContactSocial, as: "socials" },
-      ],
-      transaction,
-    });
-
-    const source = await Contact.findByPk(sourceId, {
-      include: [
-        { model: ContactPhoneNumber, as: "phoneNumbers" },
-        { model: ContactEmail, as: "emails" },
-        { model: ContactAddress, as: "addresses" },
-        { model: ContactSocial, as: "socials" },
-      ],
-      transaction,
-    });
+    const master = await Contact.findByPk(masterId, { include: FULL_INCLUDES, transaction });
+    const source = await Contact.findByPk(sourceId, { include: FULL_INCLUDES, transaction });
 
     if (!master || !source) {
       await transaction.rollback();
@@ -736,7 +887,87 @@ export const mergeContacts = async (req, res) => {
       }
     }
 
-    // 6. Record merge log in database
+    // 6. Emergency contacts — dedupe by phone_number
+    {
+      const masterKeys = (master.emergencies || []).map((e) => String(e.phone_number || "").replace(/\D/g, ""));
+      for (const em of (source.emergencies || [])) {
+        const k = String(em.phone_number || "").replace(/\D/g, "");
+        if (!masterKeys.includes(k)) {
+          await ContactEmergency.create({
+            contactId: master.id,
+            name: em.name, relation: em.relation,
+            phone_number: em.phone_number, email: em.email,
+            address: em.address, is_primary: !!em.is_primary,
+          }, { transaction });
+        }
+      }
+    }
+
+    // 7. Education — dedupe by degree + institute + end_year
+    {
+      const keyOf = (e) => `${e.degree}|${e.institute}|${e.end_year || ""}`.toLowerCase();
+      const masterKeys = (master.educations || []).map(keyOf);
+      for (const ed of (source.educations || [])) {
+        if (!masterKeys.includes(keyOf(ed))) {
+          await ContactEducation.create({
+            contactId: master.id,
+            degree: ed.degree, field_of_study: ed.field_of_study,
+            institute: ed.institute, grade: ed.grade,
+            start_year: ed.start_year, end_year: ed.end_year,
+            is_current: !!ed.is_current,
+          }, { transaction });
+        }
+      }
+    }
+
+    // 8. Experience — dedupe by organization + post + start_date
+    {
+      const keyOf = (x) => `${x.organization}|${x.post}|${x.start_date || ""}`.toLowerCase();
+      const masterKeys = (master.experiences || []).map(keyOf);
+      for (const xp of (source.experiences || [])) {
+        if (!masterKeys.includes(keyOf(xp))) {
+          await ContactExperience.create({
+            contactId: master.id,
+            organization: xp.organization, post: xp.post,
+            experience_type: xp.experience_type,
+            start_date: xp.start_date, end_date: xp.end_date,
+            is_current: !!xp.is_current, responsibilities: xp.responsibilities,
+          }, { transaction });
+        }
+      }
+    }
+
+    // 9. Office — dedupe by employee_id (globally unique).
+    {
+      const masterKeys = (master.offices || []).map((o) => o.employee_id);
+      for (const off of (source.offices || [])) {
+        if (!masterKeys.includes(off.employee_id)) {
+          // Re-assign by updating the source row to point to master so we
+          // don't violate the unique constraint on employee_id.
+          await ContactOffice.update(
+            { contactId: master.id },
+            { where: { id: off.id }, transaction }
+          );
+        }
+      }
+    }
+
+    // 10. Health — dedupe by disease (case-insensitive)
+    {
+      const masterKeys = (master.healths || []).map((h) => String(h.disease || "").toLowerCase());
+      for (const h of (source.healths || [])) {
+        if (!masterKeys.includes(String(h.disease || "").toLowerCase())) {
+          await ContactHealth.create({
+            contactId: master.id,
+            disease: h.disease, severity: h.severity,
+            diagnosed_on: h.diagnosed_on, medication: h.medication,
+            notes: h.notes, is_active: h.is_active !== false,
+          }, { transaction });
+        }
+      }
+    }
+
+    // 11. Record merge log in database
     const mergeLog = await MergeLog.create(
       {
         merged_by: req.user ? req.user.username : "System Admin",
@@ -881,6 +1112,43 @@ export const undoMerge = async (req, res) => {
       );
     }
 
+    // Restore source's new relations (emergencies/educations/experiences/offices/healths)
+    const restoreChild = async (Model, list, fkValue) => {
+      if (!Array.isArray(list) || !list.length) return;
+      await Model.bulkCreate(
+        list.map((row) => ({
+          ...row,
+          contactId: fkValue,
+          createdAt: row.createdAt ? new Date(row.createdAt) : undefined,
+          updatedAt: row.updatedAt ? new Date(row.updatedAt) : undefined,
+        })),
+        { transaction }
+      );
+    };
+    await restoreChild(ContactEmergency,  sourceSnapshot.emergencies,  restoredSource.id);
+    await restoreChild(ContactEducation,  sourceSnapshot.educations,   restoredSource.id);
+    await restoreChild(ContactExperience, sourceSnapshot.experiences,  restoredSource.id);
+    // Office needs special handling because employee_id is globally unique:
+    // if a row already lives under master with the same employee_id, leave it.
+    if (Array.isArray(sourceSnapshot.offices)) {
+      for (const off of sourceSnapshot.offices) {
+        const existing = await ContactOffice.findOne({ where: { employee_id: off.employee_id }, transaction });
+        if (!existing) {
+          await ContactOffice.create({
+            ...off, contactId: restoredSource.id,
+            createdAt: off.createdAt ? new Date(off.createdAt) : undefined,
+            updatedAt: off.updatedAt ? new Date(off.updatedAt) : undefined,
+          }, { transaction });
+        } else if (existing.contactId === restoredSource.id) {
+          // Already moved; no-op
+        } else {
+          // existing belongs to someone else — move it back to source if it was source's originally.
+          await ContactOffice.update({ contactId: restoredSource.id }, { where: { id: existing.id }, transaction });
+        }
+      }
+    }
+    await restoreChild(ContactHealth, sourceSnapshot.healths, restoredSource.id);
+
     // 2. Restore Master record core state to snapshot
     const master = await Contact.findByPk(masterSnapshot.id, { transaction });
     if (master) {
@@ -962,6 +1230,41 @@ export const undoMerge = async (req, res) => {
           { transaction }
         );
       }
+
+      // Master's new relations — wipe and restore from snapshot
+      const wipeRestore = async (Model, list) => {
+        await Model.destroy({ where: { contactId: master.id }, transaction });
+        if (Array.isArray(list) && list.length) {
+          await Model.bulkCreate(
+            list.map((row) => ({
+              ...row,
+              contactId: master.id,
+              createdAt: row.createdAt ? new Date(row.createdAt) : undefined,
+              updatedAt: row.updatedAt ? new Date(row.updatedAt) : undefined,
+            })),
+            { transaction }
+          );
+        }
+      };
+      await wipeRestore(ContactEmergency,  masterSnapshot.emergencies);
+      await wipeRestore(ContactEducation,  masterSnapshot.educations);
+      await wipeRestore(ContactExperience, masterSnapshot.experiences);
+      // Office uses globally-unique employee_id, so we destroy then create.
+      await ContactOffice.destroy({ where: { contactId: master.id }, transaction });
+      if (Array.isArray(masterSnapshot.offices)) {
+        for (const off of masterSnapshot.offices) {
+          // Avoid colliding with rows that may already exist under another contact.
+          const dup = await ContactOffice.findOne({ where: { employee_id: off.employee_id }, transaction });
+          if (!dup) {
+            await ContactOffice.create({
+              ...off, contactId: master.id,
+              createdAt: off.createdAt ? new Date(off.createdAt) : undefined,
+              updatedAt: off.updatedAt ? new Date(off.updatedAt) : undefined,
+            }, { transaction });
+          }
+        }
+      }
+      await wipeRestore(ContactHealth, masterSnapshot.healths);
     }
 
     // 3. Mark Merge Log as undone

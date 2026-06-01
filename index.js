@@ -154,17 +154,56 @@ app.listen(PORT, async () => {
         } catch {}
       }
     } catch (e) { console.error("custom_roles bootstrap:", e); }
-    // Ensure Contact-related tables exist (idempotent).
+    // Ensure Contact-related tables exist + drop legacy JSON columns.
     try {
-      const { Contact, ContactPhoneNumber, ContactEmail, ContactAddress, ContactSocial, MergeLog } = await import("./models/contactModel.js");
+      const cm = await import("./models/contactModel.js");
+      const { Contact, ContactPhoneNumber, ContactEmail, ContactAddress, ContactSocial,
+              ContactEmergency, ContactEducation, ContactExperience, ContactOffice, ContactHealth,
+              MergeLog } = cm;
+      // 1. Drop legacy JSON columns if they're still hanging around.
+      try {
+        const desc = await sequelize.getQueryInterface().describeTable("contacts");
+        for (const col of ["family", "education", "experience", "office", "health", "emergency"]) {
+          if (desc[col]) {
+            try {
+              await sequelize.getQueryInterface().removeColumn("contacts", col);
+              console.log(`✅ Dropped legacy contacts.${col}`);
+            } catch (e) { /* ignore — some DBs disallow DROP COLUMN inside auto-migration */ }
+          }
+        }
+      } catch {}
+      // 2. Sync each child table (creates the new ones, alters existing).
       await Contact.sync({ alter: true });
       await ContactPhoneNumber.sync({ alter: true });
       await ContactEmail.sync({ alter: true });
       await ContactAddress.sync({ alter: true });
       await ContactSocial.sync({ alter: true });
+      await ContactEmergency.sync({ alter: true });
+      await ContactEducation.sync({ alter: true });
+      await ContactExperience.sync({ alter: true });
+      await ContactOffice.sync({ alter: true });
+      await ContactHealth.sync({ alter: true });
       await MergeLog.sync({ alter: true });
-      console.log("✅ Contact tables synced successfully");
-    } catch (e) { console.error("Contact tables sync error:", e.message); }
+      console.log("✅ Contact tables synced (incl. new emergencies / educations / experiences / offices / healths)");
+    } catch (e) {
+      console.error("Contact tables sync error:", e.message);
+      // Fallback: plain sync if alter failed (e.g. SQLite refused an ALTER).
+      try {
+        const { Contact, ContactPhoneNumber, ContactEmail, ContactAddress, ContactSocial,
+                ContactEmergency, ContactEducation, ContactExperience, ContactOffice, ContactHealth, MergeLog } = await import("./models/contactModel.js");
+        await Contact.sync();
+        await ContactPhoneNumber.sync();
+        await ContactEmail.sync();
+        await ContactAddress.sync();
+        await ContactSocial.sync();
+        await ContactEmergency.sync();
+        await ContactEducation.sync();
+        await ContactExperience.sync();
+        await ContactOffice.sync();
+        await ContactHealth.sync();
+        await MergeLog.sync();
+      } catch (e2) { console.error("Contact tables plain sync also failed:", e2.message); }
+    }
 
     // Ensure the academy_enrollments table exists (idempotent).
     const { default: AcademyEnrollment } = await import("./models/academyEnrollmentModel.js");
