@@ -18,7 +18,7 @@ const RegistrationForm = sequelize.define(
     title:           { type: DataTypes.STRING, allowNull: false },
     slug:            { type: DataTypes.STRING, allowNull: false, unique: true, comment: "URL-safe identifier for the public form" },
     description:     { type: DataTypes.TEXT,   allowNull: true },
-    category:        { type: DataTypes.ENUM("Event", "Course", "Program", "Workshop", "Camp", "Other"), allowNull: false, defaultValue: "Other" },
+    category:        { type: DataTypes.ENUM("Event", "Course", "Program", "Workshop", "Camp", "Job", "Other"), allowNull: false, defaultValue: "Other" },
     status:          { type: DataTypes.ENUM("Draft", "Open", "Closed", "Archived"), allowNull: false, defaultValue: "Draft" },
     opens_at:        { type: DataTypes.DATE, allowNull: true },
     closes_at:       { type: DataTypes.DATE, allowNull: true },
@@ -181,7 +181,7 @@ const RegistrationRole = sequelize.define(
     registrationId: { type: DataTypes.UUID, allowNull: false },
     role_name:      {
       type: DataTypes.ENUM(
-        "Participant", "Student", "OJT", "Instructor", "Volunteer",
+        "Participant", "Student", "OJT", "Employee", "Instructor", "Volunteer",
         "Organizer", "Speaker", "Mentor", "Attendee", "Staff", "Other"
       ),
       allowNull: false,
@@ -287,6 +287,64 @@ const RegistrationOJT = sequelize.define(
 );
 
 // ─────────────────────────────────────────────────────────────────────────────
+// J. RegistrationEmployee (child of Registration; auto-created when role=Employee/Staff)
+// ─────────────────────────────────────────────────────────────────────────────
+const RegistrationEmployee = sequelize.define(
+  "RegistrationEmployee",
+  {
+    id:                     { type: DataTypes.UUID, defaultValue: DataTypes.UUIDV4, primaryKey: true },
+    registrationId:         { type: DataTypes.UUID, allowNull: false },
+    contactId:              { type: DataTypes.UUID, allowNull: true },
+    employee_id:            { type: DataTypes.STRING, allowNull: false, unique: true, comment: "EMP-{year}-{seq}" },
+    joining_date:           { type: DataTypes.DATEONLY, allowNull: false, defaultValue: DataTypes.NOW },
+    confirmation_date:      { type: DataTypes.DATEONLY, allowNull: true, comment: "End of probation" },
+    leaving_date:           { type: DataTypes.DATEONLY, allowNull: true },
+    designation:            { type: DataTypes.STRING, allowNull: false, defaultValue: "Staff" },
+    department:             { type: DataTypes.STRING, allowNull: true },
+    grade:                  { type: DataTypes.STRING, allowNull: true, comment: "Pay grade / band" },
+    employment_type:        { type: DataTypes.ENUM("Full-time", "Part-time", "Contract", "Daily-Wages", "Consultant"), allowNull: false, defaultValue: "Full-time" },
+    work_location:          { type: DataTypes.STRING, allowNull: true },
+    reporting_to:           { type: DataTypes.UUID, allowNull: true, comment: "FK → contacts.id (manager)" },
+    shift:                  { type: DataTypes.ENUM("Morning", "Evening", "Night", "Rotational", "Flexible"), allowNull: true },
+    working_hours_per_week: { type: DataTypes.INTEGER, allowNull: true },
+    salary_basic:           { type: DataTypes.DECIMAL(12, 2), allowNull: true },
+    salary_allowance:       { type: DataTypes.DECIMAL(12, 2), allowNull: true },
+    salary_gross:           {
+      type: DataTypes.VIRTUAL,
+      get() {
+        const basic = parseFloat(this.getDataValue("salary_basic") || 0);
+        const allow = parseFloat(this.getDataValue("salary_allowance") || 0);
+        return Number((basic + allow).toFixed(2));
+      },
+    },
+    salary_currency:        { type: DataTypes.STRING, allowNull: false, defaultValue: "PKR" },
+    payment_method:         { type: DataTypes.ENUM("Bank", "Cash", "Cheque", "Mobile-Wallet"), allowNull: true },
+    bank_name:              { type: DataTypes.STRING, allowNull: true },
+    bank_account:           { type: DataTypes.STRING, allowNull: true },
+    tax_number:             { type: DataTypes.STRING, allowNull: true, comment: "NTN" },
+    eobi_number:            { type: DataTypes.STRING, allowNull: true },
+    contract_url:           { type: DataTypes.STRING, allowNull: true },
+    probation_months:       { type: DataTypes.INTEGER, allowNull: false, defaultValue: 3 },
+    is_probation:           { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
+    status:                 { type: DataTypes.ENUM("Active", "Probation", "On-Leave", "Suspended", "Terminated", "Resigned", "Retired"), allowNull: false, defaultValue: "Probation" },
+    notes:                  { type: DataTypes.TEXT, allowNull: true },
+  },
+  {
+    tableName: "registration_employees",
+    timestamps: true,
+    indexes: [
+      { fields: ["registrationId"] },
+      { fields: ["contactId"] },
+      { unique: true, fields: ["employee_id"] },
+      { fields: ["department"] },
+      { fields: ["designation"] },
+      { fields: ["status"] },
+      { fields: ["reporting_to"] },
+    ],
+  }
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Associations
 // ─────────────────────────────────────────────────────────────────────────────
 // Form -> its children
@@ -312,6 +370,8 @@ Registration.hasMany(RegistrationStudent,   { as: "students",   foreignKey: "reg
 RegistrationStudent.belongsTo(Registration, { as: "registration", foreignKey: "registrationId" });
 Registration.hasMany(RegistrationOJT,       { as: "ojts",       foreignKey: "registrationId", onDelete: "CASCADE" });
 RegistrationOJT.belongsTo(Registration,     { as: "registration", foreignKey: "registrationId" });
+Registration.hasMany(RegistrationEmployee,  { as: "employees",  foreignKey: "registrationId", onDelete: "CASCADE" });
+RegistrationEmployee.belongsTo(Registration,{ as: "registration", foreignKey: "registrationId" });
 
 // Field <- Answer
 RegistrationAnswer.belongsTo(RegistrationField, { as: "field", foreignKey: "fieldId" });
@@ -322,6 +382,8 @@ Registration.belongsTo(Contact,        { as: "contact",    foreignKey: "contactI
 RegistrationStudent.belongsTo(Contact, { as: "contact",    foreignKey: "contactId" });
 RegistrationOJT.belongsTo(Contact,     { as: "contact",    foreignKey: "contactId" });
 RegistrationOJT.belongsTo(Contact,     { as: "supervisor", foreignKey: "supervisor_id" });
+RegistrationEmployee.belongsTo(Contact, { as: "contact", foreignKey: "contactId" });
+RegistrationEmployee.belongsTo(Contact, { as: "manager", foreignKey: "reporting_to" });
 
 export {
   RegistrationForm,
@@ -333,4 +395,5 @@ export {
   RegistrationRole,
   RegistrationStudent,
   RegistrationOJT,
+  RegistrationEmployee,
 };

@@ -16,6 +16,7 @@ import {
   RegistrationRole,
   RegistrationStudent,
   RegistrationOJT,
+  RegistrationEmployee,
 } from "../models/registrationModel.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -46,6 +47,7 @@ const FULL_REG_INCLUDES = [
   { model: RegistrationRole,      as: "roles" },
   { model: RegistrationStudent,   as: "students" },
   { model: RegistrationOJT,       as: "ojts" },
+  { model: RegistrationEmployee,  as: "employees" },
   { model: Contact,               as: "contact" },
 ];
 
@@ -86,6 +88,18 @@ const createRoleChild = async (registration, roleName, transaction) => {
       status: "Pending",
     }, { transaction });
   }
+  if (roleName === "Employee" || roleName === "Staff") {
+    const employee_id = await nextSeq(RegistrationEmployee, "employee_id", "EMP");
+    return RegistrationEmployee.create({
+      registrationId: registration.id,
+      contactId: registration.contactId,
+      employee_id,
+      joining_date: new Date(),
+      designation: roleName === "Staff" ? "Staff" : "Employee",
+      is_probation: true,
+      status: "Probation",
+    }, { transaction });
+  }
   return null;
 };
 
@@ -101,6 +115,12 @@ const archiveRoleChild = async (registrationId, roleName, transaction) => {
     await RegistrationOJT.update(
       { status: "Terminated" },
       { where: { registrationId, status: { [Op.notIn]: ["Terminated", "Completed"] } }, transaction }
+    );
+  }
+  if (roleName === "Employee" || roleName === "Staff") {
+    await RegistrationEmployee.update(
+      { status: "Resigned", leaving_date: new Date() },
+      { where: { registrationId, status: { [Op.notIn]: ["Terminated", "Resigned", "Retired"] } }, transaction }
     );
   }
 };
@@ -813,5 +833,81 @@ export const updateOJT = async (req, res) => {
     res.json(row);
   } catch (e) {
     res.status(500).json({ message: "Failed to update OJT", error: e.message });
+  }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// EMPLOYEES — direct read/write on registration_employees
+// ═══════════════════════════════════════════════════════════════════════════
+export const listEmployees = async (req, res) => {
+  try {
+    const where = {};
+    if (req.query.department)   where.department = req.query.department;
+    if (req.query.designation)  where.designation = req.query.designation;
+    if (req.query.status)       where.status = req.query.status;
+    if (req.query.reporting_to) where.reporting_to = req.query.reporting_to;
+    const rows = await RegistrationEmployee.findAll({
+      where, order: [["createdAt", "DESC"]],
+      include: [
+        { model: Contact, as: "contact" },
+        { model: Contact, as: "manager" },
+        { model: Registration, as: "registration" },
+      ],
+    });
+    res.json(rows);
+  } catch (e) {
+    res.status(500).json({ message: "Failed to list employees", error: e.message });
+  }
+};
+
+export const updateEmployee = async (req, res) => {
+  try {
+    const row = await RegistrationEmployee.findByPk(req.params.id);
+    if (!row) return res.status(404).json({ message: "Not found" });
+    // confirmation_date ≥ joining_date when both set
+    const j = req.body.joining_date || row.joining_date;
+    const c = req.body.confirmation_date || row.confirmation_date;
+    if (j && c && new Date(c) < new Date(j)) {
+      return res.status(400).json({ message: "confirmation_date cannot be before joining_date" });
+    }
+    await row.update(req.body);
+    res.json(row);
+  } catch (e) {
+    res.status(500).json({ message: "Failed to update employee", error: e.message });
+  }
+};
+
+export const confirmEmployee = async (req, res) => {
+  try {
+    const row = await RegistrationEmployee.findByPk(req.params.id);
+    if (!row) return res.status(404).json({ message: "Not found" });
+    const confirmation_date = req.body.confirmation_date || new Date();
+    if (new Date(confirmation_date) < new Date(row.joining_date)) {
+      return res.status(400).json({ message: "confirmation_date cannot be before joining_date" });
+    }
+    await row.update({
+      confirmation_date,
+      is_probation: false,
+      status: "Active",
+    });
+    res.json(row);
+  } catch (e) {
+    res.status(500).json({ message: "Failed to confirm employee", error: e.message });
+  }
+};
+
+export const terminateEmployee = async (req, res) => {
+  try {
+    const row = await RegistrationEmployee.findByPk(req.params.id);
+    if (!row) return res.status(404).json({ message: "Not found" });
+    const { leaving_date, reason } = req.body || {};
+    await row.update({
+      leaving_date: leaving_date || new Date(),
+      status: "Terminated",
+      notes: reason ? `${row.notes ? row.notes + "\n" : ""}Terminated: ${reason}` : row.notes,
+    });
+    res.json(row);
+  } catch (e) {
+    res.status(500).json({ message: "Failed to terminate employee", error: e.message });
   }
 };

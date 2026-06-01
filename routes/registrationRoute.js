@@ -9,8 +9,9 @@ import {
   updateRegistrationStatus, bulkUpdateStatus, recordPayment, exportRegistrationsCSV,
   // Roles (child of Registration)
   addRole, updateRole, removeRole,
-  // Students / OJTs (read/write child tables)
+  // Students / OJTs / Employees (read/write child tables)
   listStudents, updateStudent, listOJTs, updateOJT,
+  listEmployees, updateEmployee, confirmEmployee, terminateEmployee,
 } from "../controllers/registrationController.js";
 
 const router = express.Router();
@@ -48,5 +49,10 @@ router.get("/students",    listStudents);
 router.patch("/students/:id", updateStudent);
 router.get("/ojts",        listOJTs);
 router.patch("/ojts/:id",  updateOJT);
+
+router.get("/employees",                 listEmployees);
+router.patch("/employees/:id",           updateEmployee);
+router.post("/employees/:id/confirm",    confirmEmployee);
+router.post("/employees/:id/terminate",  terminateEmployee);
 
 export default router;

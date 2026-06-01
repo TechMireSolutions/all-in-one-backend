@@ -163,7 +163,8 @@ app.listen(PORT, async () => {
       const rm = await import("./models/registrationModel.js");
       const order = ["RegistrationForm", "RegistrationSection", "RegistrationField",
                      "Registration", "RegistrationAnswer", "RegistrationStatusLog",
-                     "RegistrationRole", "RegistrationStudent", "RegistrationOJT"];
+                     "RegistrationRole", "RegistrationStudent", "RegistrationOJT",
+                     "RegistrationEmployee"];
       for (const name of order) {
         try { await rm[name].sync({ alter: true }); }
         catch (e) {
